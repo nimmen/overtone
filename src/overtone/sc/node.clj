@@ -10,9 +10,10 @@
         [clojure.pprint])
   (:require [clojure.zip :as zip]
             [overtone.config.log :as log]
-            [overtone.at-at :as at-at]))
+            [overtone.at-at :as at-at]
+            [overtone.sc.protocols :as protocols]))
 
-; The root group is implicitly allocated
+;; The root group is implicitly allocated
 (defonce _root-group_ (next-id :node))
 
 (defn- emit-inactive-node-modification-error
@@ -60,9 +61,6 @@
         "Connect N controls of a node to a set of sequential control
         buses, starting at the given control name."))
 
-    (defprotocol IKillable
-      (kill* [this] "Kill a synth element (node, or group, or ...)."))
-
     (defprotocol ISynthGroup
       (group-prepend-node [group node]
         "Adds the node to the head (first to be executed) of the group.")
@@ -95,13 +93,13 @@
   "If object can be converted to an sc id, then return the sc id,
    otherwise returns the object unchanged."
   [obj]
-    (try
+  (try
     (to-sc-id obj)
     (catch IllegalArgumentException e
       obj)))
 
 (defn idify
-  "Attempts to convert all objs in col to a sc id. Mapjs objs to
+  "Attempts to convert all objs in col to a sc id. Maps objs to
    themselves if a conversion wasn't possible."
   [col]
   (map to-id col))
@@ -693,15 +691,24 @@
 "
   [& nodes]
   (doseq [node (flatten nodes)]
-    (kill* node)))
+    (protocols/kill* node)))
 
 (extend SynthNode
-  IKillable
+  protocols/IKillable
   {:kill* node-free*})
 
 (extend java.lang.Long
-  IKillable
+  protocols/IKillable
   {:kill* node-free*})
+
+(extend java.lang.Integer
+  protocols/IKillable
+  {:kill* node-free*})
+
+(extend java.lang.Float
+  protocols/IKillable
+  {:kill* node-free*})
+
 
 ;;/g_queryTree				get a representation of this group's node subtree.
 ;;	[
@@ -802,7 +809,7 @@
    :group-node-tree    group-node-tree*
    :group-free         group-free*}
 
-  IKillable
+  protocols/IKillable
   {:kill* group-deep-clear*})
 
 

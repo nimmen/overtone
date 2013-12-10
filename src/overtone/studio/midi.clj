@@ -3,20 +3,21 @@
      :doc "A high level MIDI API for sending and receiving messages with
            external MIDI devices and automatically hooking into
            Overtone's event system." }
-  (:use [overtone.sc node dyn-vars]
-        [overtone.at-at :only (mk-pool every)]
+  (:use [overtone.sc.dyn-vars]
+        [overtone.at-at :only [mk-pool every]]
         [overtone.libs event counters]
         [overtone.sc.defaults :only [INTERNAL-POOL]]
         [overtone.helpers.system :only [mac-os?]]
-        [overtone.config.store :only [config-get]])
+        [overtone.config.store :only [config-get]]
+        )
   (:require [overtone.config.log :as log]
             [overtone.midi :as midi]))
 
 (defonce midi-control-agents* (atom {}))
 (defonce poly-players* (atom {}))
 
-(declare connected-midi-devices)
-(declare connected-midi-receivers)
+(declare midi-connected-devices)
+(declare midi-connected-receivers)
 
 (defn midi-mk-full-device-key
   "Returns a unique key for the specific device. In the case of multiple
@@ -28,7 +29,7 @@
   [dev]
   (or (::full-device-key dev)
       (let [dev-num (or (::dev-num dev)
-                        (::dev-num (get (connected-midi-devices) (:device dev)))
+                        (::dev-num (get (midi-connected-devices) (:device dev)))
                         -1)]
         [:midi-device (dev :vendor) (dev :name) (dev :description) dev-num])))
 
@@ -46,14 +47,14 @@
    either contains the search string or matches the search regexp
    depending on the type of parameter supplied"
   [search]
-  (midi-find-connected search (connected-midi-devices)))
+  (midi-find-connected search (midi-connected-devices)))
 
 (defn midi-find-connected-receivers
   "Returns a list of connected MIDI receivers where the full device key
    either contains the search string or matches the search regexp
    depending on the type of parameter supplied"
   [search]
-  (midi-find-connected search (connected-midi-receivers)))
+  (midi-find-connected search (midi-connected-receivers)))
 
 (defn midi-find-connected-device
   "Returns the first connected MIDI device found where the full device
@@ -82,59 +83,11 @@
   [dev command control-id]
   (concat (midi-mk-full-device-event-key dev command) [control-id]))
 
-(defn midi-poly-player
-  "Sets up the event handlers and manages synth instances to easily play
-  a polyphonic instrument with a midi controller.  The play-fn should
-  take the note and velocity as the only two arguments, and the synth
-  should have a gate parameter that can be set to zero when a :note-off
-  event is received.
-
-    (definst ding
-      [note 60 velocity 100 gate 1]
-      (let [freq (midicps note)
-            amp  (/ velocity 127.0)
-            snd  (sin-osc freq)
-            env  (env-gen (adsr 0.001 0.1 0.6 0.3) gate :action FREE)]
-        (* amp env snd)))
-
-    (def dinger (midi-poly-player ding))
-  "
-  ([play-fn] (midi-poly-player play-fn ::midi-poly-player))
-  ([play-fn player-key] (midi-poly-player play-fn [:midi] player-key))
-  ([play-fn device-key player-key]
-     (let [notes*        (atom {})
-           on-event-key  (concat device-key [:note-on])
-           off-event-key (concat device-key [:note-off])
-           on-key        (concat [::midi-poly-player] on-event-key)
-           off-key       (concat [::midi-poly-player] off-event-key)]
-       (on-event on-event-key (fn [{note :note velocity :velocity}]
-                                (let [amp (float (/ velocity 127))]
-                                  (swap! notes* assoc note (play-fn :note note :amp amp :velocity velocity))))
-                 on-key)
-
-       (on-event off-event-key (fn [{note :note velocity :velocity}]
-                                 (let [velocity (float (/ velocity 127 ))]
-                                   (when-let [n (get @notes* note)]
-                                     (with-inactive-node-modification-error :silent
-                                       (node-control n [:gate 0 :after-touch velocity]))
-                                     (swap! notes* dissoc note))))
-                 off-key)
-
-       ;; TODO listen for '/n_end' event for nodes that free themselves
-       ;; before recieving a note-off message.
-       (let [player (with-meta {:notes* notes*
-                                :on-key on-key
-                                :off-key off-key
-                                :device-key device-key
-                                :player-key player-key
-                                :playing? (atom true)}
-                      {:type ::midi-poly-player})]
-         (swap! poly-players* assoc player-key player)))))
 
 (defn midi-device-keys
   "Return a list of device event keys for the available MIDI devices"
   []
-  (map midi-mk-full-device-key (vals (connected-midi-devices))))
+  (map midi-mk-full-device-key (vals (midi-connected-devices))))
 
 (defn- midi-control-handler
   [state-atom handler mapping msg]
@@ -173,7 +126,7 @@
      (if (keyword? player-or-key)
        (midi-player-stop (get @poly-players* player-or-key))
        (let [player player-or-key]
-         (when-not (= ::midi-poly-player (type player))
+         (when-not (= :overtone.studio.midi-player/midi-poly-player (type player))
            (throw (IllegalArgumentException. (str "Expected a midi-poly-player. Got: " (prn-str (type player))))))
          (remove-event-handler (:on-key player))
          (remove-event-handler (:off-key player))
@@ -277,57 +230,17 @@
         msg     (assoc msg :dev-key dev-key)]
     (event (midi-mk-full-device-key dev) :sysex msg)))
 
-(defn- mmj-dev?
-  "Returns true if obj is one of the object from the humatic mmj
-  library. i.e. is in the package de.humatic.mmj"
-  [o]
-  (.contains (str (class (:device o))) "de.humatic.mmj"))
-
-(defn- select-mmj-devices-if-available-on-osx
-  "If the config option :use-mmj is set to true, then if any mmj devices
-   happen to be available, then only use them and remove all other
-   devices. Otherwise, remove all mmj devices and use the default JVM
-   implementations.
-
-   This will only affect OS X systems that have the external mmj lib
-   installed as an extension (http://www.humatic.de/htools/mmj.htm).
-   The mmj lib provides duplicate MIDI objects in addition to
-   the default JVM objects for each device.
-
-   The mmj library is useful as it supports sysex messages which the
-   current JVM implementation doesn't (on OS X). However, it doesn't
-   support multiple identical devices which makes it unsuitable for some
-   usecases.
-
-   Unfortunately the mmj lib is EOL, so on OS X, until the JVM
-   implementations are fixed, we can either have sysex message support
-   or support for multiple similar devices (i.e. two nanoKONTROLs) but
-   not both.
-
-   If we're not running os x, then returns devs unchanged."
-  [devs]
-  (if-not (mac-os?)
-    devs
-    (if (config-get :use-mmj)
-      (if-let [mmjs (seq (filter mmj-dev? devs))]
-        mmjs
-        devs)
-      (remove mmj-dev? devs))))
-
 (defn- remove-duplicate-devices
   "Removes all duplicate devices, where a duplicate is defined as a
-   device map with the same :device value. (The mmj library appears to
-   return duplicate devices)."
+   device map with the same :device value."
   [devs]
   (vals (into {} (map (fn [dev] [(:device dev) dev]) devs))))
 
 (defn- detect-midi-devices
   "Returns a set of MIDI device maps filtered to remove unwanted devices
-   such as the Java Real Time Sequencer, and de.humatic.mmj
-   duplicates (if on os x)"
+   such as the Java Real Time Sequencer and duplicates"
   []
   (let [devs   (midi/midi-sources)
-        devs   (select-mmj-devices-if-available-on-osx devs)
         devs   (remove-duplicate-devices devs)
         devs   (map #(assoc % ::dev-num (next-id
                                          (str "overtone.studio.midi - device - "
@@ -341,7 +254,6 @@
 (defn- detect-midi-receivers
   []
   (let [rcvs   (midi/midi-sinks)
-        rcvs   (select-mmj-devices-if-available-on-osx rcvs)
         rcvs   (remove-duplicate-devices rcvs)
         rcvs   (map #(assoc % ::dev-num (next-id
                                          (str "overtone.studio.midi - receiver - "
@@ -370,13 +282,13 @@
                 false)))
           devs)))
 
-(defonce ^:private connected-midi-devices*
+(defonce ^:private midi-connected-devices*
   (-> (detect-midi-devices) add-listener-handles!))
 
-(defonce ^:private connected-midi-receivers*
+(defonce ^:private midi-connected-receivers*
   (map midi/midi-out (detect-midi-receivers)))
 
-(defn connected-midi-devices
+(defn midi-connected-devices
   "Returns a sequence of device maps for all 'connected' MIDI
    devices. By device, we mean a MIDI unit that is capable of sending
    messages (such as a MIDI piano). By connected, we mean that Overtone
@@ -388,9 +300,9 @@
    available. We are considering work-arounds to this issue for a future
    release."
   []
-  connected-midi-devices*)
+  midi-connected-devices*)
 
-(defn connected-midi-receivers
+(defn midi-connected-receivers
   "Returns a sequence of device maps for all 'connected' MIDI
    receivers. By receiver, we mean a MIDI unit that is capable of
    receiving messages. By connected, we mean that Overtone is aware of
@@ -401,7 +313,7 @@
    available. We are considering work-arounds to this issue for a future
    release."
   []
-  connected-midi-receivers*)
+  midi-connected-receivers*)
 
 (defn midi-device-num
   "Returns the device number for the specified MIDI device"
@@ -420,12 +332,12 @@
    encoded as hex values.  Commas, spaces, and other whitespace is
    ignored.
 
-   See connected-midi-receivers for a full list of available receivers."
+   See midi-connected-receivers for a full list of available receivers."
   [rcv byte-seq]
   (midi/midi-sysex rcv byte-seq))
 
 (defn midi-control
-  "Send a MIDI control msg to the receiver. See connected-midi-receivers
+  "Send a MIDI control msg to the receiver. See midi-connected-receivers
    for a full list of available receivers."
   ([rcv ctl-num val]
      (midi/midi-control rcv ctl-num val))
@@ -433,15 +345,15 @@
      (midi/midi-control rcv ctl-num val channel)))
 
 (defn midi-note-on
-  "Send a MIDI note on msg to the receiver. See connected-midi-receivers
-   for a full listof available receivers."
+  "Send a MIDI note on msg to the receiver. See midi-connected-receivers
+   for a full list of available receivers."
   ([rcv note-num vel]
      (midi/midi-note-on rcv note-num vel))
   ([rcv note-num vel channel]
      (midi/midi-note-on rcv note-num vel channel)))
 
 (defn midi-note-off
-  "Send a MIDI note off msg to the receiver. See connected-midi-receivers
+  "Send a MIDI note off msg to the receiver. See midi-connected-receivers
    for a full list of available receivers."
   ([rcv note-num]
      (midi/midi-note-off rcv note-num))
@@ -453,7 +365,7 @@
    sent dur ms after the on message resulting in the note being 'played'
    for dur ms.
 
-   See connected-midi-receivers for a full list of available receivers."
+   See midi-connected-receivers for a full list of available receivers."
   ([rcv note-num vel dur]
      (midi/midi-note rcv note-num vel dur))
   ([rcv note-num vel dur channel]

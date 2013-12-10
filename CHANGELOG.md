@@ -1,17 +1,385 @@
 # Change Log
 
-## Version 0.9.0 (To be released)
+## Version 0.9.1 (25th November 2013)
 
-New features:
+Version bump forced by Clojars missing a commit. Nothing new here.
 
-* Experimental GUI widgets using seesaw and swing (see examples in overtone.examples.gui)
-  - synth controls to adjust parameters (`synth-controller`, `live-synth-controller`)
-  - mixer for instruments (`mixer`)
-  - piano roll and two types of step sequencers (`piano-roll`, `step-sequencer`, `stepinator`)
-  - x,y,z surface controller (`surface`)
-  - wave-form and wave-table editors for wave-table synthesis (`waveform-editor`, `wavetable-editor`)
-  - basic spectrogram showing frequency space representation (`spectrogram`)
+## Version 0.9.0 (25th November 2013)
 
+### New Committers
+
+* Mike Anderson
+* Karsten Schmidt
+* Joseph Wilk
+* Rich Hickey
+* Kevin Irrwitzer
+* James Petry
+
+### Major Additions & Changes
+
+#### apply-*
+
+`apply-at` has been renamed to `apply-by` which more
+ correctly represents its semantics as it applies the function *before*
+ the specified time. `apply-at` still exists, except it now applies the
+ fn *at* the specified time. To update, simply grep for all occurences of
+ `apply-at` and replace with `apply-by`.
+
+#### Synth Positioning
+
+When triggering synths it was possible to specify a position for the
+synth node to be executed in the node tree. This is important for
+ensuring that synth chains are correctly ordered such that any post-fx
+synths are executed after the source synth they are modifying. Prior to
+0.9.0 this was possibly by prefixing the synth args with 'special'
+values:
+
+     (def my-g (group))
+     (my-synth :tgt my-g :freq 440)
+
+Overtone figured out that the `:tgt my-g` key-val pair were special, and
+used them to target the synth node, and not pass them as params to the
+synth along with the `:freq` param. This was slightly magical and also
+potentially clashed with a synth designer's ability to use the special
+keywords as valid synth param names.
+
+This syntax has now been deprecated and replaced with a more explicit
+vector-based syntax. If you wish to target your synth, you need to pass
+a vector as the first parameter. The vector should be a pair of:
+
+    [:target-specifier target]
+
+Valid target specifiers are:
+
+* `:head` - places new synth node at the head of the target (group)
+* `:tail` - places new synth node at the tail of the target (group)
+* `:before` - places new synth node immediately before target (group/synth)
+* `:after` - places new synth node immediatedly after target (group/synth)
+* `:replace` - replaces target with new synth node
+
+Therefore, to place a new instance of `my-synth` at the head of `my-g`
+you can issue the following:
+
+    (my-synth [:head my-g] :freq 440)
+
+Currently, you'll get an exception if you use the old style syntax. This
+means that the old keywords are still unavailable to synth designs. This
+will be relaxed in a future version.
+
+#### MIDI
+
+The MIDI API has been substantially revamped. This is in the Apple
+tradition of actually reducing functionality with the aim of making the
+surviving functionality easier to use. Essentially the underlying MIDI
+library provided by the dependency `overtone/midi-clj` is no longer
+available in the global API which is pulled in automatically to the
+`overtone.live` and `overtone.core` namespaces. Of course, you're still
+free to pull in the `overtone.midi` namespace, which is still on the
+classpath should you need access to the old functions. However, if you
+find yourself doing this - please let me know. The aim is for this not
+to be necessary.
+
+MIDI devices are now automatically detected on boot and auto-hooked up
+to the event system. You have access to the list of detected devices
+(and receivers) via the functions: `midi-connected-devices` and
+`midi-connected-receivers`. Take a look at the example file
+`examples/midi/basic.clj` for more a quick tour of the MIDI API.
+
+
+#### Graphviz
+
+If you're working on a sophisticated synth design, or just simply want
+to have another perspective of a given synth's design, it's often useful
+to be able to look at a visual representation. This is now possible with
+the new Graphviz support. You can generate dot notation for an arbitrary
+synth design with the function `graphviz`.
+
+For example, given the synth:
+
+    (defsynth foo []
+      (out 0 (sin-osc 440)))
+
+You can produce corresponding dot notation with:
+
+    (graphviz foo)
+
+Which will return the following string:
+
+    digraph synthdef {
+    1 [label = "{{ <bus> bus 0.0|{{<signals___sin____osc___0>}|signals}} |<__UG_NAME__>out }" style="filled, bold, rounded"  shape=record rankdir=LR];
+    0 [label = "{{ <freq> freq 440.0|<phase> phase 0.0} |<__UG_NAME__>sin-osc }" style="filled, bold, rounded"  shape=record rankdir=LR];
+
+    0:__UG_NAME__ -> 1:signals___sin____osc___0 ;
+
+    }
+
+You can then easily `spit` this out to a file and feed it into graphviz
+to render an image/pdf etc manually. However, we also provide the
+function `show-graphviz-synth` which will automatically call `dot` to
+generate a pdf and then display it for you:
+
+    (show-graphviz-synth foo) ;;=> PDF pops up!
+
+This has been exhaustively tested on OS X, so any pull requests for
+minor niggles on Linux/Windows are happily
+considered. `show-graphviz-synth` is currently pretty much guaranteed
+not to work on Windows, but it would be awesome if it did.
+
+#### Bus monitoring
+
+One aspect of Overtone which is seeing active development is means with
+which to monitor the internal values within running synths. Overtone
+0.9.0 now ships with a bus monitoring system which works with both audio
+and control busses.
+
+Calling `bus-monitor` with a bus will return an atom containing the
+current value of the bus. Note that this isn't the peak amplitude,
+rather the direct value of the control bus. For multi-channel buses, an
+offset may be specified. Current amplitude is updated within the
+returned atom every 50 ms.
+
+
+#### Persistent store
+
+Overtone now supports a simple persistent key value store which is
+essentially a Clojure map serialised as EDN in file with the path
+`~/.overtone/user-store.clj`. Adding to the store is a matter of
+`store-set!` and getting values from it is simply `store-get`. The store
+is meant merely as a simple convenience mechanism for sharing data
+between Overtone projects.
+
+#### Stopping and Clearing Default Group
+
+Overtone has long provided `stop` which kills all synths in the default
+group. However, it doesn't clear out all the subgroups which is
+sometimes wanted. This is now available with `clear`. Overtone also
+provides an initial group structure with 'safe' groups both before and
+after the default group. These are intended for longer-running synths
+either feeding control signals to ephemeral synths or adding FX to
+them. These 'safe' groups can now be stopped with `stop-all` and also
+all the subgroups can be cleared out with `clear-all`. For more
+information on the default group structure see the `foundation-*` fns.
+
+#### Node events
+
+It's now possible to register oneshot handler function for when specific
+nodes are created, destroyed, paused or started with the new `on-node-*`
+family of functions. For example to have a function execute every time a
+node is started:
+
+    (defsynth foo [] (out 0 (sin-osc)))
+
+    (def f (foo))
+
+    (on-node-started f (fn [m] (println "Node"  (-> m :node :id) "started!")))
+    (node-pause f)
+    (node-start f) ;;=> "Node 31 started!"
+    (node-pause f)
+    (node-start f) ;;=> "Node 31 started!"
+
+#### Synth Triggers
+
+It is possible to send information out of a specific synth and into
+Overtone as an event via the `send-trig` ugen. This is now a little bit
+easier with the new trigger handler functions. Firstly, there's
+`trig-id` which will return you a unique id for use as a trigger id. You
+can then feed that to your synth and also use it to register handler
+functions to execute when data from that specific synth is received:
+
+    ;; create new id
+    (def uid (trig-id))
+
+    ;; define a synth which uses send-trig
+    (defsynth foo [t-id 0] (send-trig (impulse 10) t-id (sin-osc)))
+
+    ;; register a handler fn
+    (on-trigger uid
+                (fn [val] (println "trig val:" val))
+                ::debug)
+
+    ;; create a new instance of synth foo with trigger id as a param
+    (foo uid)
+
+#### Envelopes
+
+Using envelopes effectively has long been a dark Overtone art. They have
+a huge potential for powerful manipulation of synth internals to finely
+control both pitch and timbre though time. The simplest approach to
+using envelopes is using the `env-gen` helper fns such as `perc` and
+`adsr`. These functions have supported keyword argument semantics
+similar to the ugen functions given that they're used in the same
+context. However, until this release, they haven't reported their param
+list in the function argument list metadata. This is now fixed in this
+release. In addition, to help ease discovery of these helper fns, they
+are also now prefixed with `env-` so those using editors with
+autocomplete can find them more easily. The helper functions provided in
+0.9.0 are: `env-triangle`, `env-sine`, `env-perc`, `env-lin`,
+`env-cutoff`, `env-dadsr`, `env-adsr` and `env-asr`.
+
+The `envelope` function (which all the helper functions are written in
+terms of) has also been improved. It is now possible to pass a
+heterogeneous list of keywords and floats for the `curves`
+parameter. This means that it's now possible to request different
+keywords for different envelope segments. Take a look at the `envelope`
+docstring for extensive information.
+
+#### Resonate Workshop
+
+Karsten 'Toxi' Schmidt has kindly donated his resonate workshop
+files to the examples folder. These can be found within
+`examples/workshops/resonate2013`. Karsten is renowned for giving
+awesome workshops, so it's wonderful to be able to ship with this
+material for everyone to play.
+
+#### Docstrings
+
+Although it can be fairly argued that Overtone is still missing end-user
+documentation (something we're currently working hard at fixing) we have
+always had excellent internal documentation and this release continues
+with this tradition. All of our end-user functions have full docstrings
+and many of them have been improved and tweaked to make them more
+readable and understandable.
+
+### New fns
+
+* `midi-find-connected-devices` - list all auto-connected MIDI devices
+* `midi-find-connected-device` - list all auto-connected MIDI devices
+* `midi-find-connected-receivers` - list all auto-connected MIDI receivers
+* `midi-find-connected-receiver` - list all auto-connected MIDI receivers
+* `midi-device-num` - get the unique device num (for a specific MIDI make/model)
+* `midi-full-device-key` - get the full device key used for the event system
+* `cycle-fn` - create a composite fn which cycles through a list of fns on application
+* `rotate` - treat a list as a circular buffer and offset into it
+* `fill` -  fill a list with the values of another (cycling if necessary)
+* `trig-id` - return a unique id for use with trigger ugen
+* `on-trigger` - add handler for when a specific synth trigger event is received
+* `on-latest-trigger` - similar to on-latest-event but for triggers
+* `on-sync-trigger` - similar to on-sync-event but for triggers
+* `clear` - stop all running synths in default group and remove all subgroups
+* `stop-all` - stop all running synths including within safe groups. Does not remove subgroups.
+* `clear-all` - stop all rurnning synths including within safe groups and remove all subgroups.
+* `node-destroyed-event-key` - returns the key used for node destroyed events
+* `node-created-event-key` - returns the key used for node created events
+* `node-paused-event-key` - returns the key used for node paused events
+* `node-started-event-key` - returns the key used for node-started events
+* `on-node-destroyed` - create a oneshot handler triggered when node is destroyed
+* `on-node-created` - create a oneshot handler trigered when node is created
+* `on-node-paused` - create a oneshot handler triggered when node is paused
+* `on-node-started` - create a oneshot handler triggered when node is started
+* `graphviz` - create a valid dot file representation of a synth design
+* `show-graphviz-synth`- show a PDF of the visual representation of a synth design
+* `freesound` - create a playable sample from a freesound id
+* `audio-bus-monitor` - returns an atom which is auto updated with the current bus value
+* `control-bus-monitor`- returns an atom which is auto updated with the current bus value
+* `bus-monitor` - returns an atom which is auto updated with the current bus value
+* `synth-args` - returns a seq of the synth's args as keywords
+* `synth-arg-index` - returns an integer index of synth's arg
+* `store-get` - get value with key from persistent user store
+* `store-set!` - set value with key within user's persistent store
+* `store` - get full persistent store map
+* `env-triangle` - duplicate of `triangle`
+* `env-sine` - duplicate of `sine`
+* `env-perc` - duplicate of `perc`
+* `env-lin` - duplicate of `lin`
+* `env-cutoff` - duplicate of `cutoff`
+* `env-dadsr` - duplicate of `dadsr`
+* `env-adsr` - duplicate of `adsr`
+* `env-asr` - duplicate of `asr`
+
+### Renamed fns
+
+* `node-get-control` -> `node-get-controls`
+* `bus-set!` -> `control-bus-set!`
+* `bus-get` -> `control-bus-get`
+* `bus-set-range` -> `control-bus-set-range`
+* `bus-get-range` -> `control-bus-get-range`
+* `remove-handler`  -> `remove-event-handler`
+* `remove-all-handlers` -> `remove-all-event-handlers`
+* `lin-env` -> `lin`
+* `connected-midi-devices` -> `midi-connected-devices`
+* `connected-midi-receivers` -> `midi-connected-receivers`
+* `apply-at` -> `apply-by`
+
+### Deprecated fns
+
+* `midi-devices`
+* `midi-device?`
+* `midi-ports`
+* `midi-sources`
+* `midi-sinks`
+* `midi-find-device`
+* `midi-in`
+* `midi-out`
+* `midi-route`
+* `midi-shortmessage-status`
+* `midi-sysexmessage-status`
+* `midi-shortmessage-command`
+* `midi-shortmessage-keys`
+* `midi-msg`
+* `midi-handle-events`
+* `midi-send-msg`
+* `hex-char-values`
+* `midi-mk-byte-array`
+* `midi-play`
+
+### New synths
+
+* `overtone.synth.sts/prophet`
+* `overtone.synth.retro/tb-303`
+
+### Renamed synths
+
+* `bitcrusher` -> `fx-bitcrusher`
+
+### User visible improvements
+
+* Report `:num-control-busses` in `server-info`
+* Rename `apply-at` to `apply-by` and implement `apply-at` to apply the fn at the specified time, not before it.
+* Remove limit and ordering restrictions on `scale-range`
+* Teach `fm` synth about `out-bus` param
+* Teach `sampled-piano` about `amp` and `rate` params
+* Modify `AudioBus` and `ControlBus` print formatter to print a default name and to label the attributes more clearly.
+* `RecurringJob` and `ScheduledJobs` are now killable
+* Add `pan` param to the sample players
+* *Breaking change* - `node-get-control` now only accepts one arg and returns a value. Use new `node-get-controls` for old behaviour.
+* Teach `sync-event` to take a single map as an argument - similar to event
+* Add new store-fns `store-get` and `store-set!` for storing user values separate from the config within `~/.overtone/user-store.clj`
+* Warn users when JVM argument `tieredStopAtLevel` is set to 1
+* Remove support for using mmj MIDI library on OS X
+* Make more things killable - Integers, Floats, Synths, regexs
+* idify synth args
+
+
+### Internal improvemnts
+
+* automatically create `MidiOutReceiver` objects for all detected midi out receivers to enable comms.
+* Reduce `MAX-OSC-SAMPLES` to work within the constraints of UDP packets
+* handle exceptions generated in `on-latest-event` hander-fns
+* Add `reset-returning-prev!`
+* Don't ensure-connected in kill fn
+* Extend `Group` to support `ISynthNode` (given that groups are actually nodes).
+* Emit events when nodes are destroyed, created, paused and started.
+* Unify ugen name in debug namespace to Overtone style name - and also replace Binary/UnaryOpUGens with appropriate names: `*`, `+`, `/` etc.
+* Add some explicit type checks for synthdef manipulation fns.
+* Remove reliance on presence of `:spec` key in sdefs for unification process. This allows sdefs read from binary scsynthdef files to also be correctly unified.
+* Update `at-at` dependency to 1.2.0
+* Teach `fs` to take multiple txt strings (which will subsequently be separated with a space)
+* Teach `find-note-name` to handle nil arg - let nil flow through
+* Add Coyote onset detector ugen to exceptions which can take ar ugens
+* Catch `UnsatisfiedLinkError` when attempting to load native libs and print out error.
+
+### Bugfixes
+
+* Calling either `stop-player` or `kill-player` on the return obj from one of the scheduling fns such as `periodic` or `after-delay` now has correct behaviour.
+* Fix `group-free` to actually delete a group
+* Fix `pitch-shift` arg name from window-cize to window-size
+* Fix control-bus asynchronous message multiplexing issue.
+* Fix `indented-str-block` to correctly count length of lines
+* Switch to much simpler (also non-explosive) implementation of `topological-sort-ugens`
+* Reset `*print-length*` dynamic var to ensure all data is printed out
+* Ensure `bur-rd` and `buf-wr` phase arg is at audio rate when ugen is also at audio rate.
+* Add ugen checks for `balance2`
+* Fixed `vintage-bass` inst to be audible
 
 ## Version 0.8.1 (28th January 2013)
 

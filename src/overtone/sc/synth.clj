@@ -16,7 +16,8 @@
         [overtone.helpers.string :only [hash-shorten]])
 
   (:require [overtone.config.log :as log]
-            [clojure.set :as set]))
+            [clojure.set :as set]
+            [overtone.sc.protocols :as protocols]))
 
 
 (defn- valid-control-proxy-rate?
@@ -221,19 +222,19 @@
   (for [[p-name p-val] (partition 2 params)]
     (let [param-map
           (cond
-            (vector? p-val) (do
-                              (ensure-valid-control-proxy-vec! p-val)
-                              {:name (str p-name)
-                               :default (first p-val)
-                               :rate (second p-val)})
+           (vector? p-val) (do
+                             (ensure-valid-control-proxy-vec! p-val)
+                             {:name (str p-name)
+                              :default (first p-val)
+                              :rate (second p-val)})
 
-            (associative? p-val) (merge
-                                  {:name  (str p-name)
-                                   :rate  DEFAULT-RATE} p-val)
+           (associative? p-val) (merge
+                                 {:name  (str p-name)
+                                  :rate  DEFAULT-RATE} p-val)
 
-            :else {:name (str p-name)
-                   :default `(float ~p-val)
-                   :rate DEFAULT-RATE})]
+           :else {:name (str p-name)
+                  :default `(float (to-id ~p-val))
+                  :rate DEFAULT-RATE})]
       (ensure-param-keys! param-map)
       param-map)))
 
@@ -397,45 +398,31 @@
 
 (defn topological-sort-ugens
   "Sort into a vector where each node in the directed graph of ugens
-  will always be preceded by its upstream dependencies."
+   will always be preceded by its upstream dependencies.  Depth first,
+   from:
+
+   http://en.wikipedia.org/wiki/Topological_sorting,
+
+   following the advice here:
+
+   http://supercollider.svn.sourceforge.net/viewvc/supercollider/trunk/common/build/Help/ServerArchitecture/Synth-Definition-File-Format.html
+
+   'For greatest efficiency:
+
+   Unit generators should be listed in an order that permits efficient
+   reuse of connection buffers, which means that a depth first
+   topological sort of the graph is preferable to breadth first.'"
   [ugens]
-  (loop [ugens ugens
-         ; start with leaf nodes that don't have any dependencies
-         leaves (set (filter (fn [ugen]
-                          (every?
-                            #(or (not (sc-ugen? %))
-                                 (control-proxy? %))
-                            (:args ugen)))
-                        ugens))
-         sorted-ugens []
-         rec-count 0]
+  (let [visit (fn visit [[ret visited path :as acc] ug]
+                (cond
+                 (visited ug) acc
+                 (path ug)    (throw (Exception. "ugen graph contains cycle"))
+                 :else
+                 (let [[ret visited path :as acc]
+                       (reduce visit [ret visited (conj path ug)] (ugen-children ug))]
+                   [(conj ret ug) (conj visited ug) path])))]
+    (first (reduce visit [[] #{} #{}] ugens))))
 
-    ; bail out after 1000 iterations, either a bug in this code, or a bad synth graph
-    (when (= 1000 rec-count)
-      (throw (Exception. "Invalid ugen tree passed to topological-sort-ugens, maybe you have cycles in the synthdef...")))
-
-    (if (empty? leaves)
-      sorted-ugens
-      (let [last-ugen          (last sorted-ugens)
-            ;; try to always place the downstream ugen from the last-ugen if all other
-            ;; deps are satisfied, which keeps internal buffers in cache as long as possible
-            next-ugen          (first (filter #((set (ugen-children %)) last-ugen) leaves))
-            [next-ugen leaves] (if next-ugen
-                                 [next-ugen (disj leaves next-ugen)]
-                                 [(first leaves) (set (next leaves))])
-            sorted-ugens       (conj sorted-ugens next-ugen)
-            sorted-ugen-set    (set sorted-ugens)
-            ugens              (set/difference ugens sorted-ugen-set leaves)
-            leaves             (set
-                                (reduce
-                                 (fn [rleaves ug]
-                                   (let [children (ugen-children ug)]
-                                     (if (set/subset? children sorted-ugen-set)
-                                       (conj rleaves ug)
-                                       rleaves)))
-                                 leaves
-                                 ugens))]
-        (recur ugens leaves sorted-ugens (inc rec-count))))))
 
 (comment
   ; Some test synths, while shaking out the bugs...
@@ -517,11 +504,10 @@
           args              (or args [])
           [target pos args] (extract-target-pos-args args (foundation-default-group) :tail)
           args              (idify args)
-          args              (mapcat (fn [x] (if (map? x)
-                                             (flatten (seq x))
-                                             [x]))
-                                    args)
-          args              (idify args)
+          args              (map (fn [arg] (if-let [id (:id arg)]
+                                            id
+                                            arg))
+                                 args)
           defaults          (into {} (map (fn [{:keys [name value]}]
                                             [(keyword name) @value])
                                           params))
@@ -755,3 +741,14 @@
   [synth arg-name]
   (let [arg-name (name arg-name)]
     (index-of (:args synth) arg-name)))
+
+
+(extend Synth
+  protocols/IKillable
+  {:kill* (fn [s]
+            (kill (node-tree-matching-synth-ids (:name (:sdef s)))))})
+
+(extend java.util.regex.Pattern
+  protocols/IKillable
+  {:kill* (fn [s]
+            (kill (node-tree-matching-synth-ids (:name (:sdef s)))))})

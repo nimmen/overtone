@@ -39,12 +39,19 @@
        (vec (set (concat (get JVMOPTS :any)
                          (get JVMOPTS os))))))
 
-(defproject overtone "0.9.0-SNAPSHOT"
-  :description "Collaborative Programmable Music. (http://overtone.github.com)"
-  :url "http://overtone.github.com/"
-  :dependencies [[org.clojure/clojure "1.3.0"]
-                 [org.clojure/core.incubator "0.1.0"]
-                 [org.clojure/data.json "0.1.2"]
+(defproject overtone "0.9.1"
+  :description "Collaborative Programmable Music."
+  :url "http://overtone.github.io/"
+  :mailing-list {:name "overtone"
+                 :archive "https://groups.google.com/group/overtone"
+                 :post "overtone@googlegroups.com"}
+  :license {:name "The MIT License (MIT)"
+            :url "http://opensource.org/licenses/MIT"
+            :distribution :repo
+            :comments "Please use Overtone for good"}
+
+  :dependencies [[org.clojure/clojure "1.5.1"]
+                 [org.clojure/data.json "0.2.3"]
                  [clj-native "0.9.3"]
                  [overtone/at-at "1.2.0"]
                  [overtone/osc-clj "0.9.0"]
@@ -53,13 +60,12 @@
                  [overtone/libs.handlers "0.2.0"]
                  [overtone/scsynth "3.5.7.0"]
                  [overtone/scsynth-extras "3.5.7.0"]
-                 [clj-glob "1.0.0"]
-                 [org.clojure/core.match "0.2.0-alpha11"]
-                 [seesaw "1.4.3"]]
+                 [clj-glob "1.0.0"]]
   :profiles {:test {:dependencies [[bultitude "0.2.0"]
                                    [polynome "0.2.2"]]}}
   :test-selectors {:core (fn [m] (not (some m [:gui :hw])))
                    :gui  :gui
                    :hw   :hw}
   :native-path "native"
-  :jvm-opts ~(jvm-opts))
+  :min-lein-version "2.0.0"
+  :jvm-opts ^:replace ~(jvm-opts))

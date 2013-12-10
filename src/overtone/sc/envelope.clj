@@ -30,32 +30,41 @@
    :cubed       7
    })
 
+(defn- curve->shape-id
+    "Map curve to envelope shape. If curve is a keyword, look it up in
+     ENV-SHAPES, otherwise assume it to be the generic cuve shape id of
+     5"
+    [curve]
+    (get ENV-SHAPES curve 5))
 
-(defn- shape->id
+(defn- curve->curve-id
+    "Map curve to curve id. If curve is a keyword, assume the curve id
+     is a generic shape (0) otherwise, preserve curve id"
+    [curve]
+    (if-let [id (get ENV-SHAPES curve)]
+      0
+      curve))
+
+(defn- curves->shape-ids
   "Create a repeating shapes list corresponding to a specific shape type.
   Looks shape s up in ENV-SHAPES if it's a keyword. If not, it assumes the
   val represents the bespoke curve vals for a generic curve shape (shape
   type 5). the bespoke curve vals aren't used here, but are picked up in
   curve-value.
   Mirrors *shapeNumber in supercollider/SCClassLibrary/Common/Audio/Env.sc"
-  [s]
-  (if (keyword? s)
-    (repeat (s ENV-SHAPES))
-    (repeat 5)))
+  [curves]
+  (cycle (map curve->shape-id curves)))
 
-(defn- curve-value
-  "Create the curves list for this curve type. For all standard shapes this
+(defn- curves->curve-ids
+  "Create the curves id list for the specified curves. For all standard shapes this
   list of vals isn't used. It's only required when the shape is a generic
   'curve' shape when the curve vals represent the curvature value for each
   segment. A single float is repeated for all segments whilst a list of floats
   can be used to represent the curvature value for each segment individually.
   Mirrors curveValue in supercollider/SCClassLibrary/Common/Audio/Env.sc"
-  ;;
-  [c]
-  (cond
-   (sequential? c)  c
-   (number? c) (repeat c)
-   :else (repeat 0)))
+  [curves]
+  (cycle (map curve->curve-id curves)))
+
 
 ;; Envelope specs describe a series of segments of a line, which can be used to automate
 ;; control values in synths.
@@ -74,7 +83,12 @@
    through and a list of durations (the duration in time of the lines
    between each point).
 
-   Optionally a curve may be specified. This may be one of:
+   Optionally a curve or list of curves may be specified. A single
+   curve (as a keyword or float) will be repeated for all segments. A
+   list of keywords or floats will be cycled through for all segments.
+
+   Options are:
+
    * :step              - flat segments
    * :linear            - linear segments, the default
    * :exponential       - natural exponential growth and decay. In this
@@ -83,10 +97,14 @@
    * :sine              - sinusoidal S shaped segments.
    * :welch             - sinusoidal segments shaped like the sides of a
                           Welch window.
-   * a Float            - a curvature value to be repeated for all segments.
-   * an Array of Floats - individual curvature values for each segment.
+   * :squared           - Squared segments
+   * :cubed             - Cubed segments
+   * a float            - a curvature value to be repeated for all segments.
                           Positive numbers curve the segment up whilst
                           negative numbers curve the segment down.
+   * a list of keywords - individual values for each segment. To be cycled
+     and or floats        through for all segments.
+
 
    If a release-node is specified (an integer index) the envelope will sustain
    at the release node until released which occurs when the gate input of the
@@ -102,18 +120,28 @@
   ;;See prAsArray in supercollider/SCClassLibrary/Common/Audio/Env.sc
   ([levels durations]
      (envelope levels durations :linear))
-  ([levels durations curve]
-     (envelope levels durations curve -99))
-  ([levels durations curve release-node]
-     (envelope levels durations curve release-node -99))
-  ([levels durations curve release-node loop-node]
-     (let [shapes (shape->id curve)
-           curves (curve-value curve)]
+  ([levels durations curves]
+     (envelope levels durations curves -99))
+  ([levels durations curves release-node]
+     (envelope levels durations curves release-node -99))
+  ([levels durations curves release-node loop-node]
+     (let [curves    (if (sequential? curves)
+                       curves
+                       [curves])
+           shape-ids (curves->shape-ids curves)
+           curve-ids (curves->curve-ids curves)]
        (apply vector
               (concat [(first levels) (count durations) release-node loop-node]
-                      (interleave (rest levels) durations shapes curves))))))
+                      (interleave (rest levels) durations shape-ids curve-ids))))))
 
-(defunk triangle
+(defmacro defunk-env [fn-name docstring args & body]
+  `(do
+
+     (defunk ~(symbol (str "env-" fn-name)) ~docstring ~args ~@body)
+     (defunk ~fn-name ~docstring ~args ~@body)
+     ))
+
+(defunk-env triangle
   "Create a triangle envelope description array suitable for use with the
   env-gen ugen"
   [dur 1 level 1]
@@ -121,34 +149,34 @@
     (let [dur (* dur 0.5)]
       (envelope [0 level 0] [dur dur]))))
 
-(defunk sine
+(defunk-env sine
   "Create a sine envelope description suitable for use with the env-gen ugen"
   [dur 1 level 1]
   (with-overloaded-ugens
     (let [dur (* dur 0.5)]
       (envelope [0 level 0] [dur dur] :sine))))
 
-(defunk perc
+(defunk-env perc
   "Create a percussive envelope description suitable for use with the env-gen
   ugen"
   [attack 0.01 release 1 level 1 curve -4]
   (with-overloaded-ugens
     (envelope [0 level 0] [attack release] curve)))
 
-(defunk lin-env
+(defunk-env lin
   "Create a trapezoidal envelope description suitable for use with the env-gen
   ugen"
   [attack 0.01 sustain 1 release 1 level 1 curve :linear]
   (with-overloaded-ugens
     (envelope [0 level level 0] [attack sustain release] curve)))
 
-(defunk cutoff
+(defunk-env cutoff
   "Create a cutoff envelope description suitable for use with the env-gen ugen"
   [release 0.1 level 1 curve :linear]
   (with-overloaded-ugens
     (envelope [level 0] [release] curve 0)))
 
-(defunk dadsr
+(defunk-env dadsr
   "Create a delayed attack decay sustain release envelope suitable for use with
   the env-gen ugen"
   [delay-t 0.1
@@ -159,7 +187,7 @@
       (map #(+ %1 bias) [0 0 level (* level sustain) 0])
       [delay-t attack decay release] curve)))
 
-(defunk adsr
+(defunk-env adsr
   "Create an attack decay sustain release envelope
   suitable for use as the envelope parameter of the
   env-gen ugen.
@@ -204,7 +232,7 @@
       (map #(+ %1 bias) [0 level (* level sustain) 0])
       [attack decay release] curve 2)))
 
-(defunk asr
+(defunk-env asr
   "Create an attack sustain release envelope sutable for use with the env-gen
   ugen"
   [attack 0.01 sustain 1 release 1 curve -4]
